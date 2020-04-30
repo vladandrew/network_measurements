@@ -18,3 +18,5 @@ A cloud config init file is requiered.
 
 A cloud config is needed
 `cloud-localds init.img init`
+
+bridge-utils uml-utilities net-tools psmisc
