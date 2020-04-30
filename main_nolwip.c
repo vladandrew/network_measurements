@@ -9,7 +9,7 @@
 
 #define ETH_PAD_SIZE 2
 
-#define INTERRUPT_MODE
+//#define INTERRUPT_MODE
 
 static uint16_t tx_headroom = ETH_PAD_SIZE;
 static uint16_t rx_headroom = ETH_PAD_SIZE;
@@ -135,7 +135,7 @@ static inline void packet_handler(struct uk_netdev *dev,
 	printf("%d\n", k);
 
 
-	uk_sched_yield();
+	//uk_sched_yield();
 
 }
 
@@ -183,6 +183,7 @@ int main(void)
 	rxq_conf.callback = packet_handler;
 	rxq_conf.callback_cookie = NULL;
 	rxq_conf.s = uk_sched_get_default();
+	printf("Interrupt mode\n");
 #else
 	rxq_conf.callback = NULL;
 	rxq_conf.callback_cookie = NULL;
@@ -207,17 +208,17 @@ int main(void)
 	hw = uk_netdev_hwaddr_get(dev);
 	printf("MAC %x:%x:%x:%x:%x\n", hw->addr_bytes[0],hw->addr_bytes[1], hw->addr_bytes[2], hw->addr_bytes[3], hw->addr_bytes[4], hw->addr_bytes[5] );
 
-	ret = uk_netdev_rxq_intr_enable(dev, 0);
-	if (ret < 0) {
-		printf("Opsie\n");
-	}
 	/* Receive packet */
 	struct uk_netbuf *nb;
 	printf("ETH %d IP %d UDP %d\n", sizeof(struct ether_header), sizeof(struct iphdr), sizeof(struct udphdr));
 
 #ifndef INTERRUPT_MODE
 	uk_netdev_rxq_intr_disable(dev, 0);
+#else
+	ret = uk_netdev_rxq_intr_enable(dev, 0);
+	assert(ret >= 0 );
 #endif
+
 	struct ether_header *eth_header;
 	struct iphdr *ip_hdr;
 	while (1) {
