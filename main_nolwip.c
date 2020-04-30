@@ -24,7 +24,7 @@
 struct	ether_header {
 	uint8_t	ether_dhost[6];
 	uint8_t	ether_shost[6];
-	uint8_t	ether_type;
+	uint16_t ether_type;
 }__attribute__((packed));
 
 struct udphdr {
@@ -53,7 +53,7 @@ static uint16_t tx_headroom = ETH_PAD_SIZE;
 static uint16_t rx_headroom = ETH_PAD_SIZE;
 
 #ifdef USE_SIMPLE_QUEUE
-struct uk_netbuf *queue[2000];
+struct uk_netbuf *queue[500];
 int k = 0;
 #endif
 
@@ -112,11 +112,12 @@ static inline void uknetdev_output(struct uk_netdev *dev, struct uk_netbuf *nb)
 
 	eth_header = (struct ether_header *) nb->data;
 	if (eth_header->ether_type == 8) {
-		ip_hdr = (struct iphdr *)((char *)nb->data + sizeof(struct ether_header) + 1);
+		ip_hdr = (struct iphdr *)((char *)nb->data + sizeof(struct ether_header));
 		if (ip_hdr->protocol == 0x11) {
-			ip_hdr = (struct iphdr *)((char *)nb->data + sizeof(struct ether_header) + 1);
-			udp_hdr = (struct udphdr *)((char *)nb->data + sizeof(struct ether_header) + 1 + sizeof(struct iphdr));
+			ip_hdr = (struct iphdr *)((char *)nb->data + sizeof(struct ether_header));
+			udp_hdr = (struct udphdr *)((char *)nb->data + sizeof(struct ether_header) + sizeof(struct iphdr));
 
+			/* Switch MAC */
 			uint8_t tmp[6];
 			memcpy(tmp, eth_header->ether_dhost, 6);
 			memcpy(eth_header->ether_dhost, eth_header->ether_shost, 6);
@@ -133,7 +134,9 @@ static inline void uknetdev_output(struct uk_netdev *dev, struct uk_netbuf *nb)
 			udp_hdr->source ^= udp_hdr->dest;
 
 			/* No checksum requiere, they are 16 bits and
-			 * switching them does not influence the checsum */
+			 * switching them does not influence the checsum
+			 * PS: I have also computed the cheksum and it's the same
+			 * */
 
 #ifndef TX_NO_RETRANSMISSION
 			do {
@@ -143,8 +146,15 @@ static inline void uknetdev_output(struct uk_netdev *dev, struct uk_netbuf *nb)
 #ifndef TX_NO_RETRANSMISSION
 			} while(uk_netdev_status_notready(ret));
 #endif
+			if (ret < 0) {
+				uk_netbuf_free_single(nb);
+			}
 
+		} else {
+			uk_netbuf_free_single(nb);
 		}
+	} else {
+		uk_netbuf_free_single(nb);
 	}
 }
 
@@ -203,7 +213,9 @@ int main(void)
 	assert(info.max_tx_queues);
 	assert(info.max_rx_queues);
 
-	rx_headroom = (rx_headroom < info.nb_encap_rx)
+	assert(uk_netdev_state_get(dev) == UK_NETDEV_UNCONFIGURED);
+
+		rx_headroom = (rx_headroom < info.nb_encap_rx)
 		? info.nb_encap_rx : rx_headroom;
 	tx_headroom = (tx_headroom < info.nb_encap_tx)
 		? info.nb_encap_tx : tx_headroom;
@@ -221,13 +233,15 @@ int main(void)
 	rxq_conf.alloc_rxpkts_argp = a;
 	/* No threads */
 #ifdef INTERRUPT_MODE
+	printf("Running in intr\n");
 	rxq_conf.callback = packet_handler;
-	rxq_conf.callback_cookie = NULL;
+	rxq_conf.callback_cookie = packet_handler;
 #ifdef CONFIG_LIBUKNETDEV_DISPATCHERTHREADS
 	rxq_conf.s = uk_sched_get_default();
 	assert(rxq_conf.s);
 #endif /* CONFIG_LIBUKNETDEV_DISPATCHERTHREADS */
 #else
+	printf("Running busy waiting\n");
 	rxq_conf.callback = NULL;
 	rxq_conf.callback_cookie = NULL;
 #endif /* INTERRUPT_MODE */
@@ -273,6 +287,6 @@ int main(void)
 			uknetdev_output(dev, nb);
 #endif
 
+		}
+		return 0;
 	}
-	return 0;
-}
