@@ -18,6 +18,8 @@
 
 //#define RX_ONLY_ONE_PACKET
 
+//#define TX_NO_RETRANSMISSION
+
 /* These headers are taken from linux */
 struct	ether_header {
 	uint8_t	ether_dhost[6];
@@ -120,17 +122,27 @@ static inline void uknetdev_output(struct uk_netdev *dev, struct uk_netbuf *nb)
 			memcpy(eth_header->ether_dhost, eth_header->ether_shost, 6);
 			memcpy(eth_header->ether_shost, tmp, 6);
 
+			/* Switch IP addresses */
 			ip_hdr->saddr ^= ip_hdr->daddr;
 			ip_hdr->daddr ^= ip_hdr->saddr;
 			ip_hdr->saddr ^= ip_hdr->daddr;
 
+			/* switch UDP PORTS */
 			udp_hdr->source ^= udp_hdr->dest;
 			udp_hdr->dest ^= udp_hdr->source;
 			udp_hdr->source ^= udp_hdr->dest;
 
+			/* No checksum requiere, they are 16 bits and
+			 * switching them does not influence the checsum */
+
+#ifndef TX_NO_RETRANSMISSION
 			do {
+#endif
 				ret = uk_netdev_tx_one(dev, 0, nb);
+
+#ifndef TX_NO_RETRANSMISSION
 			} while(uk_netdev_status_notready(ret));
+#endif
 
 		}
 	}
