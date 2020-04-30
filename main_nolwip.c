@@ -10,6 +10,11 @@
 #define ETH_PAD_SIZE 2
 
 //#define INTERRUPT_MODE
+/* We create an array that represents a queue, we do not
+ * send the packet immediatly, we wait until we receive
+ * all packets. Otherwise as soon as we receive a packet
+ * we send it to the target*/
+//#define USE_SIMPLE_QUEUE
 
 static uint16_t tx_headroom = ETH_PAD_SIZE;
 static uint16_t rx_headroom = ETH_PAD_SIZE;
@@ -107,8 +112,48 @@ uint16_t ntohs(uint16_t n)
 	return u.c ? bswap_16(n) : n;
 }
 
+
+#ifdef USE_SIMPLE_QUEUE
 struct uk_netbuf *queue[2000];
 int k = 0;
+#endif
+
+
+static inline void uknetdev_output(struct uk_netdev *dev, struct uk_netbuf *nb)
+{
+
+	struct ether_header *eth_header;
+	struct iphdr *ip_hdr;
+	struct udphdr *udp_hdr;
+	int ret;
+
+	eth_header = (struct ether_header *) nb->data;
+	if (eth_header->ether_type == 8) {
+		ip_hdr = (struct iphdr *)((char *)nb->data + sizeof(struct ether_header) + 1);
+		if (ip_hdr->protocol == 0x11) {
+			ip_hdr = (struct iphdr *)((char *)nb->data + sizeof(struct ether_header) + 1);
+			udp_hdr = (struct udphdr *)((char *)nb->data + sizeof(struct ether_header) + 1 + sizeof(struct iphdr));
+
+			uint8_t tmp[6];
+			memcpy(tmp, eth_header->ether_dhost, 6);
+			memcpy(eth_header->ether_dhost, eth_header->ether_shost, 6);
+			memcpy(eth_header->ether_shost, tmp, 6);
+
+			ip_hdr->saddr ^= ip_hdr->daddr;
+			ip_hdr->daddr ^= ip_hdr->saddr;
+			ip_hdr->saddr ^= ip_hdr->daddr;
+
+			udp_hdr->source ^= udp_hdr->dest;
+			udp_hdr->dest ^= udp_hdr->source;
+			udp_hdr->source ^= udp_hdr->dest;
+
+			do {
+				ret = uk_netdev_tx_one(dev, 0, nb);
+			} while(uk_netdev_status_notready(ret));
+
+		}
+	}
+}
 
 static inline void packet_handler(struct uk_netdev *dev,
 		uint16_t queue_id __unused, void *argp)
@@ -117,9 +162,11 @@ static inline void packet_handler(struct uk_netdev *dev,
 	struct ether_header *eth_header;
 	struct iphdr *ip_hdr;
 	int ret;
-	k = 0;
 
-	printf("%d\n", k);
+#ifdef USE_SIMPLE_QUEUE
+	k = 0;
+#endif
+
 	do {
 		struct uk_netbuf *nb;
 		ret = uk_netdev_rx_one(dev, 0, &nb);
@@ -127,15 +174,15 @@ static inline void packet_handler(struct uk_netdev *dev,
 		if (uk_netdev_status_notready(ret)) {
 			continue;
 		}
+
+#ifndef USE_SIMPLE_QUEUE
+		uknetdev_output(dev, nb);
+#else
 		queue[k] = nb;
 		k++;
+#endif
 
 	} while(uk_netdev_status_more(ret));
-	//printf("%d\n",k);
-	printf("%d\n", k);
-
-
-	//uk_sched_yield();
 
 }
 
@@ -149,17 +196,16 @@ int main(void)
 	int devid = 0;
 	int ret;
 
-	printf("%d\n", uk_netdev_count());
 	a = uk_alloc_get_default();
+	assert(a != NULL);
 
 	dev = uk_netdev_get(devid);
+	assert(dev != NULL);
 
 	struct uk_netdev_info info;
-	/* Get device informations */
 	uk_netdev_info_get(dev, &info);
-	if (!info.max_rx_queues || !info.max_tx_queues) {
-		printf("Opsie\n");
-	}
+	assert(info.max_tx_queues);
+	assert(info.max_rx_queues);
 
 	rx_headroom = (rx_headroom < info.nb_encap_rx)
 		? info.nb_encap_rx : rx_headroom;
@@ -174,7 +220,6 @@ int main(void)
 	assert(ret >= 0);
 
 	/* Configure the RX queue */
-	printf("Configuring RX queue\n");
 	rxq_conf.a = a;
 	rxq_conf.alloc_rxpkts = netif_alloc_rxpkts;
 	rxq_conf.alloc_rxpkts_argp = a;
@@ -183,7 +228,6 @@ int main(void)
 	rxq_conf.callback = packet_handler;
 	rxq_conf.callback_cookie = NULL;
 	rxq_conf.s = uk_sched_get_default();
-	printf("Interrupt mode\n");
 #else
 	rxq_conf.callback = NULL;
 	rxq_conf.callback_cookie = NULL;
@@ -191,12 +235,10 @@ int main(void)
 
 	ret = uk_netdev_rxq_configure(dev, 0, 0, &rxq_conf);
 	assert(ret >= 0);
-	printf("Configured RX queue\n");
 
-	/* TX Queue */
+	/*  Configure the TX queue*/
 	txq_conf.a = a;
 	ret = uk_netdev_txq_configure(dev, 0, 0, &txq_conf);
-	printf("Configured TX queue\n");
 
 	/* GET mTU */
 	uint16_t mtu = uk_netdev_mtu_get(dev);
@@ -213,7 +255,8 @@ int main(void)
 	printf("ETH %d IP %d UDP %d\n", sizeof(struct ether_header), sizeof(struct iphdr), sizeof(struct udphdr));
 
 #ifndef INTERRUPT_MODE
-	uk_netdev_rxq_intr_disable(dev, 0);
+	ret = uk_netdev_rxq_intr_disable(dev, 0);
+	assert(ret >= 0);
 #else
 	ret = uk_netdev_rxq_intr_enable(dev, 0);
 	assert(ret >= 0 );
@@ -229,41 +272,13 @@ int main(void)
 		packet_handler(dev, 0, NULL);
 #endif
 		/* We echo all the packets that are in queue */
+
+#ifdef USE_SIMPLE_QUEUE
 		for (int i = 0; i < k; i++) {
-			//k = 120;
 			struct uk_netbuf *nb;
 			nb = queue[i];
-
-			eth_header = (struct ether_header *) nb->data;
-
-
-			if (eth_header->ether_type == 8) {
-				/* Eth has a pad of 1 */
-				ip_hdr = (struct iphdr *)((char *)nb->data + sizeof(struct ether_header) + 1);
-				if (ip_hdr->protocol == 0x11) {
-					//printf("sending response\n");
-					ip_hdr = (struct iphdr *)((char *)nb->data + sizeof(struct ether_header) + 1);
-					struct udphdr * udp_hdr = (struct udphdr *)((char *)nb->data + sizeof(struct ether_header) + 1 + sizeof(struct iphdr));
-
-					uint8_t tmp[6];
-					memcpy(tmp, eth_header->ether_dhost, 6);
-					memcpy(eth_header->ether_dhost, eth_header->ether_shost, 6);
-					memcpy(eth_header->ether_shost, tmp, 6);
-
-					ip_hdr->saddr ^= ip_hdr->daddr;
-					ip_hdr->daddr ^= ip_hdr->saddr;
-					ip_hdr->saddr ^= ip_hdr->daddr;
-
-					udp_hdr->source ^= udp_hdr->dest;
-					udp_hdr->dest ^= udp_hdr->source;
-					udp_hdr->source ^= udp_hdr->dest;
-					do {
-						ret = uk_netdev_tx_one(dev, 0, nb);
-					} while(uk_netdev_status_notready(ret));
-
-				}
-			}
-		}
+			uknetdev_output(dev, nb);
+#endif
 
 	}
 	return 0;
