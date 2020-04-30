@@ -16,8 +16,44 @@
  * we send it to the target*/
 //#define USE_SIMPLE_QUEUE
 
+//#define RX_ONLY_ONE_PACKET
+
+/* These headers are taken from linux */
+struct	ether_header {
+	uint8_t	ether_dhost[6];
+	uint8_t	ether_shost[6];
+	uint8_t	ether_type;
+}__attribute__((packed));
+
+struct udphdr {
+	uint16_t source;
+	uint16_t dest;
+	uint16_t len;
+	uint16_t check;
+}__attribute__((packed));
+
+struct iphdr 
+{
+	uint8_t	ihl:4,
+		version:4;
+	uint8_t	tos;
+	uint16_t	tot_len;
+	uint16_t	id;
+	uint16_t	frag_off;
+	uint8_t	ttl;
+	uint8_t	protocol;
+	uint16_t	check;
+	uint32_t	saddr;
+	uint32_t	daddr;
+}__attribute__((packed));
+
 static uint16_t tx_headroom = ETH_PAD_SIZE;
 static uint16_t rx_headroom = ETH_PAD_SIZE;
+
+#ifdef USE_SIMPLE_QUEUE
+struct uk_netbuf *queue[2000];
+int k = 0;
+#endif
 
 struct uk_netbuf *alloc_netbuf(struct uk_alloc *a, size_t alloc_size,
 		size_t headroom)
@@ -58,66 +94,11 @@ static uint16_t netif_alloc_rxpkts(void *argp, struct uk_netbuf *nb[],
 
 	for (i = 0; i < count; ++i) {
 		nb[i] = alloc_netbuf(a, UKNETDEV_BUFLEN, rx_headroom);
-		if (!nb[i]) {
-			/* we run out of memory */
-			printf("Ran out of memory\n");
-			break;
-		}
+		assert(nb[i]);
 	}
 
 	return i;
 }
-
-struct	ether_header {
-	uint8_t	ether_dhost[6];
-	uint8_t	ether_shost[6];
-	uint8_t	ether_type;
-}__attribute__((packed));
-
-struct udphdr {
-	uint16_t source;
-	uint16_t dest;
-	uint16_t len;
-	uint16_t check;
-}__attribute__((packed));
-
-struct iphdr 
-{
-	uint8_t	ihl:4,
-		version:4;
-	uint8_t	tos;
-	uint16_t	tot_len;
-	uint16_t	id;
-	uint16_t	frag_off;
-	uint8_t	ttl;
-	uint8_t	protocol;
-	uint16_t	check;
-	uint32_t	saddr;
-	uint32_t	daddr;
-	/*The options start here. */
-}__attribute__((packed));
-
-
-
-static __inline uint16_t __bswap_16(uint16_t __x)
-{
-	return __x<<8 | __x>>8;
-}
-
-#define bswap_16(x) __bswap_16(x)
-
-uint16_t ntohs(uint16_t n)
-{
-	union { int i; char c; } u = { 1 };
-	return u.c ? bswap_16(n) : n;
-}
-
-
-#ifdef USE_SIMPLE_QUEUE
-struct uk_netbuf *queue[2000];
-int k = 0;
-#endif
-
 
 static inline void uknetdev_output(struct uk_netdev *dev, struct uk_netbuf *nb)
 {
@@ -162,17 +143,19 @@ static inline void packet_handler(struct uk_netdev *dev,
 	struct ether_header *eth_header;
 	struct iphdr *ip_hdr;
 	int ret;
-
+	struct uk_netbuf *nb;
 #ifdef USE_SIMPLE_QUEUE
 	k = 0;
 #endif
 
+#ifdef RX_ONLY_ONE_PACKET
 	do {
-		struct uk_netbuf *nb;
+#endif
+back:
 		ret = uk_netdev_rx_one(dev, 0, &nb);
 
 		if (uk_netdev_status_notready(ret)) {
-			continue;
+			goto back;
 		}
 
 #ifndef USE_SIMPLE_QUEUE
@@ -181,8 +164,9 @@ static inline void packet_handler(struct uk_netdev *dev,
 		queue[k] = nb;
 		k++;
 #endif
-
+#ifdef RX_ONLY_ONE_PACKET
 	} while(uk_netdev_status_more(ret));
+#endif
 
 }
 
@@ -227,11 +211,14 @@ int main(void)
 #ifdef INTERRUPT_MODE
 	rxq_conf.callback = packet_handler;
 	rxq_conf.callback_cookie = NULL;
+#ifdef CONFIG_LIBUKNETDEV_DISPATCHERTHREADS
 	rxq_conf.s = uk_sched_get_default();
+	assert(rxq_conf.s);
+#endif /* CONFIG_LIBUKNETDEV_DISPATCHERTHREADS */
 #else
 	rxq_conf.callback = NULL;
 	rxq_conf.callback_cookie = NULL;
-#endif
+#endif /* INTERRUPT_MODE */
 
 	ret = uk_netdev_rxq_configure(dev, 0, 0, &rxq_conf);
 	assert(ret >= 0);
@@ -239,20 +226,14 @@ int main(void)
 	/*  Configure the TX queue*/
 	txq_conf.a = a;
 	ret = uk_netdev_txq_configure(dev, 0, 0, &txq_conf);
+	assert(ret >= 0);
 
 	/* GET mTU */
 	uint16_t mtu = uk_netdev_mtu_get(dev);
-	printf("MTU: %d\n", mtu);
+	assert(mtu == 1500);
 
+	/* Start the netdev */
 	ret = uk_netdev_start(dev);
-
-	struct uk_hwaddr *hw;
-	hw = uk_netdev_hwaddr_get(dev);
-	printf("MAC %x:%x:%x:%x:%x\n", hw->addr_bytes[0],hw->addr_bytes[1], hw->addr_bytes[2], hw->addr_bytes[3], hw->addr_bytes[4], hw->addr_bytes[5] );
-
-	/* Receive packet */
-	struct uk_netbuf *nb;
-	printf("ETH %d IP %d UDP %d\n", sizeof(struct ether_header), sizeof(struct iphdr), sizeof(struct udphdr));
 
 #ifndef INTERRUPT_MODE
 	ret = uk_netdev_rxq_intr_disable(dev, 0);
