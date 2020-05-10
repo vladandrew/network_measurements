@@ -9,12 +9,15 @@
 
 #define ETH_PAD_SIZE 2
 
-//#define INTERRUPT_MODE
+///#define INTERRUPT_MODE
 /* We create an array that represents a queue, we do not
  * send the packet immediatly, we wait until we receive
  * all packets. Otherwise as soon as we receive a packet
  * we send it to the target*/
-//#define USE_SIMPLE_QUEUE
+
+#define USE_SIMPLE_QUEUE
+#define USE_TX_BURST
+#define USE_RX_BURST
 
 //#define RX_ONLY_ONE_PACKET
 
@@ -53,8 +56,9 @@ static uint16_t tx_headroom = ETH_PAD_SIZE;
 static uint16_t rx_headroom = ETH_PAD_SIZE;
 
 #ifdef USE_SIMPLE_QUEUE
-struct uk_netbuf *queue[500];
-int k = 0;
+/* 256 is the upper bound since this is the maximum number of tx descriptors */
+struct uk_netbuf *queue[256];
+uint16_t k = 0;
 #endif
 
 struct uk_netbuf *alloc_netbuf(struct uk_alloc *a, size_t alloc_size,
@@ -102,13 +106,12 @@ static uint16_t netif_alloc_rxpkts(void *argp, struct uk_netbuf *nb[],
 	return i;
 }
 
-static inline void uknetdev_output(struct uk_netdev *dev, struct uk_netbuf *nb)
+static void inline prepare_packet(struct uk_netbuf *nb)
 {
 
 	struct ether_header *eth_header;
 	struct iphdr *ip_hdr;
 	struct udphdr *udp_hdr;
-	int ret;
 
 	eth_header = (struct ether_header *) nb->data;
 	if (eth_header->ether_type == 8) {
@@ -135,25 +138,22 @@ static inline void uknetdev_output(struct uk_netdev *dev, struct uk_netbuf *nb)
 
 			/* No checksum requiere, they are 16 bits and
 			 * switching them does not influence the checsum
-			 * PS: I have also computed the cheksum and it's the same
 			 * */
-
-#ifndef TX_NO_RETRANSMISSION
-			do {
-#endif
-				ret = uk_netdev_tx_one(dev, 0, nb);
-
-#ifndef TX_NO_RETRANSMISSION
-			} while(uk_netdev_status_notready(ret));
-#endif
-			if (ret < 0) {
-				uk_netbuf_free_single(nb);
-			}
-
-		} else {
-			uk_netbuf_free_single(nb);
 		}
-	} else {
+	}
+}
+
+static inline void uknetdev_output(struct uk_netdev *dev, struct uk_netbuf *nb)
+{
+	int ret;
+#ifndef TX_NO_RETRANSMISSION
+	do {
+#endif
+		ret = uk_netdev_tx_one(dev, 0, nb);
+#ifndef TX_NO_RETRANSMISSION
+	} while(uk_netdev_status_notready(ret));
+#endif
+	if (ret < 0) {
 		uk_netbuf_free_single(nb);
 	}
 }
@@ -167,10 +167,25 @@ static inline void packet_handler(struct uk_netdev *dev,
 	int ret;
 	struct uk_netbuf *nb;
 #ifdef USE_SIMPLE_QUEUE
+#ifdef USE_RX_BURST
 	k = 0;
-#endif
+#else
+	k = 0;
+#endif /* USE_RX_BURST */
+#endif /* USE_SIMPLE_QUEUE */
 
-#ifdef RX_ONLY_ONE_PACKET
+#ifdef USE_RX_BURST
+
+	int k1;
+	do {
+		k1 = 255 - k;
+		uk_netdev_rx_burst(dev, 0, &queue[k], &k1);
+		k = k + k1;
+	} while(k < 32);
+
+
+#else
+#ifndef RX_ONLY_ONE_PACKET
 	do {
 #endif
 back:
@@ -181,13 +196,20 @@ back:
 		}
 
 #ifndef USE_SIMPLE_QUEUE
+		prepare_packet(nb);
 		uknetdev_output(dev, nb);
 #else
 		queue[k] = nb;
 		k++;
+		if (k > 254) {
+			goto done;
+		}
 #endif
-#ifdef RX_ONLY_ONE_PACKET
+#ifndef RX_ONLY_ONE_PACKET
 	} while(uk_netdev_status_more(ret));
+#endif
+done:
+	return;
 #endif
 
 }
@@ -200,7 +222,7 @@ int main(void)
 	struct uk_netdev_rxqueue_conf rxq_conf;
 	struct uk_netdev_txqueue_conf txq_conf;
 	int devid = 0;
-	int ret;
+	int ret, i;
 
 	a = uk_alloc_get_default();
 	assert(a != NULL);
@@ -271,6 +293,17 @@ int main(void)
 
 	struct ether_header *eth_header;
 	struct iphdr *ip_hdr;
+#ifdef USE_TX_BURST
+	printf("Using TX burst\n");
+#endif
+
+#ifdef USE_RX_BURST
+	printf("Using RX burst\n");
+#endif
+
+#ifdef USE_SIMPLE_QUEUE
+		struct uk_netbuf *nb;
+#endif
 	while (1) {
 
 #ifdef INTERRUPT_MODE
@@ -279,14 +312,21 @@ int main(void)
 		packet_handler(dev, 0, NULL);
 #endif
 		/* We echo all the packets that are in queue */
-
 #ifdef USE_SIMPLE_QUEUE
-		for (int i = 0; i < k; i++) {
-			struct uk_netbuf *nb;
+#ifdef USE_TX_BURST
+		for (i = 0; i < k; i++) {
 			nb = queue[i];
-			uknetdev_output(dev, nb);
-#endif
-
+			prepare_packet(nb);
 		}
-		return 0;
+		uk_netdev_tx_burst(dev, 0, &queue[0], &k);
+#else
+		for (i = 0; i < k; i++) {
+			nb = queue[i];
+			prepare_packet(nb);
+			uknetdev_output(dev, nb);
+		}
+#endif /* USE_TX_BURST */
+#endif /* USE_SIMPLE_QUEUE */
 	}
+	return 0;
+}

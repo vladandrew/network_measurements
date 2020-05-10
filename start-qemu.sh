@@ -11,10 +11,10 @@ check_if() {
 	ip l show $ifname &>/dev/null
 	if [ -n $? ]; then
 		# create new tap interface
-		sudo tunctl -u $(whoami) -t $IFNAME
+		tunctl -u $(whoami) -t $IFNAME
 
 		# enable the interface
-		sudo $SCRIPT_DIR/ifup.sh $IFNAME
+		$SCRIPT_DIR/ifup.sh $IFNAME
 	fi
 
 }
@@ -43,8 +43,8 @@ fi
 
 # run Qemu
 arp -s 10.0.0.2 $MAC
-taskset -c 0 qemu-system-x86_64 -enable-kvm -nographic -device isa-debug-exit \
-	-kernel $KERNEL \
+taskset -c 2,8 /root/qemu/build/x86_64-softmmu/qemu-system-x86_64 -enable-kvm -nographic -device isa-debug-exit -nodefaults -no-user-config -serial stdio  \
+	-kernel $KERNEL  \
 	$QEMU_NET_PARAMS \
-	"$@"
+	"$@" | tee log.txt
 

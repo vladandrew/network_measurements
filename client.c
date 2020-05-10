@@ -34,6 +34,7 @@ struct request_header {
 };
 
 int main(int argc, char *argv[]) { 
+	printf("######################%d\n", sizeof(struct request_header));
 	int sockfd; 
 	char buffer[MAXLINE]; 
 	struct sockaddr_in     servaddr; 
@@ -70,15 +71,21 @@ int main(int argc, char *argv[]) {
 	}
 	/* linux in vn */
 	if (argv[1][0] == '3') {
-		servaddr.sin_addr.s_addr = inet_addr("10.0.0.13"); 
+		servaddr.sin_addr.s_addr = inet_addr("10.0.0.5"); 
 		fptr1 = fopen("results/exp1_3","w");
 	}
 
 	if (argv[1][0] == '5') {
-		servaddr.sin_addr.s_addr = inet_addr("10.0.0.12"); 
+		servaddr.sin_addr.s_addr = inet_addr("10.0.0.6"); 
 		fptr1 = fopen("results/exp1_5","w");
 
 	}
+	
+	/* DPDK in linuxvm */
+	if (argv[1][0] == '6') {
+		servaddr.sin_addr.s_addr = inet_addr("10.0.1.2"); 
+	}
+
 
 	long long total_time = 0;
 	long long nsecs;
@@ -107,10 +114,11 @@ int main(int argc, char *argv[]) {
 
 	
 
+	fptr2 = fopen("results/debug","w");
 	/* For each packet we recieve now we send another one */
 	int i = count;
-	int lost_packets = 0;
 	int ok = 0;
+	long lost_packets = 0;
 
 	while (1) {
 		/* CLOCK_PROCESS_CPUTIME_ID ...? CLOCK_PROCESS_CPUTIME_ID */
@@ -127,7 +135,15 @@ int main(int argc, char *argv[]) {
 		clock_gettime(CLOCK_MONOTONIC, &time2);
 		time1 = req.time;
 		lost_packets += expect != req.seq;
+		fprintf(fptr2, "%d\n", req.seq);
 		/* Update the request's params */
+		if (req.seq != expect) {
+			lost_packets ++;
+			//printf("Lost packet # %d\n", expect);
+			expect = req.seq ;
+		
+		}
+		expect = (expect + 1) % (count + 10000);
 		req.time = time2;
 		req.seq = i;
 
@@ -155,6 +171,7 @@ int main(int argc, char *argv[]) {
 		if (time_mes >= 1000000000) {
 			printf("%ld requests / sec \n", num_packets);
 			printf("mean latency (last sec) %ld usecs \n", total_time / num_packets * 1 / 1000);
+			printf("Loss rate %ld\n", lost_packets );
 			//printf("Lost %d packets in last sec\n", lost_packets);
 			total_time = 0;
 
@@ -163,7 +180,7 @@ int main(int argc, char *argv[]) {
 			time_mes = 0;
 		}
 
-		//i = (i + 1) % (count + 10000);
+		i = (i + 1) % (count + 10000);
 		//expect = (expect + 1) % (count + 10000);
 		
 	}
