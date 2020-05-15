@@ -1,0 +1,4 @@
+$(eval $(call addlib,apphelloworld))
+
+APPHELLOWORLD_SRCS-y += $(APPHELLOWORLD_BASE)/main_nolwip.c
+#APPHELLOWORLD_SRCS-y += $(APPHELLOWORLD_BASE)/server.c
